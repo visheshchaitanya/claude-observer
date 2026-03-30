@@ -45,6 +45,8 @@ describe('db', () => {
       duration_ms: null,
       ts: new Date().toISOString(),
       parent_event_id: null,
+      display_name: 'TOOL:Bash',
+      ppid: null,
     };
     const id = insertEvent(db, event);
     assert.ok(id > 0);
@@ -52,6 +54,7 @@ describe('db', () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].tool, 'Bash');
     assert.equal(rows[0].phase, 'pre');
+    assert.equal(rows[0].display_name, 'TOOL:Bash');
     const sess = getSession(db, 'sess-1');
     assert.equal(sess.total_calls, 1);
   });
@@ -66,6 +69,8 @@ describe('db', () => {
       duration_ms: 42,
       ts: new Date().toISOString(),
       parent_event_id: null,
+      display_name: 'TOOL:Bash',
+      ppid: null,
     };
     insertEvent(db, event);
     const rows = getEventsBySession(db, 'sess-1');

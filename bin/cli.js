@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { join, dirname } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
 
 const program = new Command();
 
 program
   .name('claude-observer')
   .description('Real-time Claude Code tool call observer')
-  .version('0.1.0');
+  .version(pkg.version);
 
 program
   .command('start')

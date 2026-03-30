@@ -67,7 +67,7 @@ function Node({ node, depth, onSelect }) {
           background: color + '22', color, border: `1px solid ${color}44`,
           borderRadius: 3, padding: '1px 5px', fontWeight: 600,
         }}>
-          {node.tool}
+          {node.display_name ?? node.tool}
         </span>
         {node.duration_ms != null && (
           <span style={{ color: '#6e7681' }}>{node.duration_ms}ms</span>

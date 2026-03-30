@@ -2,7 +2,7 @@ import { createServer } from 'node:net';
 import { writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createObserverServer } from '../server/index.js';
-import { injectHooks, getSettingsPath } from '../server/hooks.js';
+import { injectHooks, removeHooks, getSettingsPath } from '../server/hooks.js';
 
 const PORT = 4242;
 const PID_FILE = (() => {
@@ -46,17 +46,18 @@ export async function start() {
     await open(`http://localhost:${PORT}`);
   } catch {}
 
-  // Keep process alive
-  process.on('SIGINT', async () => {
+  // Graceful shutdown — register once to avoid listener leaks
+  let shuttingDown = false;
+  async function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log('\n[claude-observer] Shutting down...');
+    removeHooks(getSettingsPath());
     await server.stop();
     try { unlinkSync(PID_FILE); } catch {}
     process.exit(0);
-  });
+  }
 
-  process.on('SIGTERM', async () => {
-    await server.stop();
-    try { unlinkSync(PID_FILE); } catch {}
-    process.exit(0);
-  });
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }

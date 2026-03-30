@@ -4,11 +4,11 @@ import { dirname } from 'node:path';
 const OBSERVER_MARKER = 'claude-observer';
 
 function buildPreCommand(port) {
-  return `curl -s --max-time 1 -X POST 'http://localhost:${port}/event?phase=pre' -H 'Content-Type: application/json' --data-binary @- || true # claude-observer`;
+  return `curl -s --max-time 1 -X POST "http://localhost:${port}/event?phase=pre&ppid=$PPID" -H 'Content-Type: application/json' --data-binary @- || true # claude-observer`;
 }
 
 function buildPostCommand(port) {
-  return `curl -s --max-time 1 -X POST 'http://localhost:${port}/event?phase=post' -H 'Content-Type: application/json' --data-binary @- || true # claude-observer`;
+  return `curl -s --max-time 1 -X POST "http://localhost:${port}/event?phase=post&ppid=$PPID" -H 'Content-Type: application/json' --data-binary @- || true # claude-observer`;
 }
 
 function makeHookEntry(command) {

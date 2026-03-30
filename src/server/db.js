@@ -19,7 +19,9 @@ const SCHEMA = `
     output TEXT,
     duration_ms INTEGER,
     ts TEXT NOT NULL,
-    parent_event_id INTEGER REFERENCES tool_events(id)
+    parent_event_id INTEGER REFERENCES tool_events(id),
+    display_name TEXT,
+    ppid TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_events_session ON tool_events(session_id);
@@ -29,6 +31,14 @@ export function createDb(dbPath) {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   db.exec(SCHEMA);
+  // Migrate: add columns that may not exist in older DBs
+  const cols = db.pragma('table_info(tool_events)').map(c => c.name);
+  if (!cols.includes('display_name')) {
+    db.exec('ALTER TABLE tool_events ADD COLUMN display_name TEXT');
+  }
+  if (!cols.includes('ppid')) {
+    db.exec('ALTER TABLE tool_events ADD COLUMN ppid TEXT');
+  }
   return db;
 }
 
@@ -41,19 +51,23 @@ export function upsertSession(db, sessionId) {
 }
 
 export function insertEvent(db, event) {
-  const result = db.prepare(`
-    INSERT INTO tool_events (session_id, tool, phase, input, output, duration_ms, ts, parent_event_id)
-    VALUES (@session_id, @tool, @phase, @input, @output, @duration_ms, @ts, @parent_event_id)
-  `).run(event);
+  const insertEventTx = db.transaction((ev) => {
+    const result = db.prepare(`
+      INSERT INTO tool_events (session_id, tool, phase, input, output, duration_ms, ts, parent_event_id, display_name, ppid)
+      VALUES (@session_id, @tool, @phase, @input, @output, @duration_ms, @ts, @parent_event_id, @display_name, @ppid)
+    `).run(ev);
 
-  db.prepare(`
-    UPDATE sessions
-    SET total_calls = total_calls + CASE WHEN ? = 'pre' THEN 1 ELSE 0 END,
-        last_event_at = ?
-    WHERE id = ?
-  `).run(event.phase, event.ts, event.session_id);
+    db.prepare(`
+      UPDATE sessions
+      SET total_calls = total_calls + CASE WHEN ? = 'pre' THEN 1 ELSE 0 END,
+          last_event_at = ?
+      WHERE id = ?
+    `).run(ev.phase, ev.ts, ev.session_id);
 
-  return result.lastInsertRowid;
+    return result.lastInsertRowid;
+  });
+
+  return insertEventTx(event);
 }
 
 export function getSession(db, sessionId) {

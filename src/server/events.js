@@ -1,43 +1,74 @@
 /**
  * createEventProcessor returns a stateful event handler.
- * It tracks open pre-events (for duration), Agent call stacks (for parent_event_id),
- * and coordinates DB writes, WebSocket broadcasts, and terminal printing.
+ *
+ * Agent calls are always top-level (parent_event_id = null). Claude Code runs
+ * all hooks from the same parent process, so $PPID cannot distinguish parallel
+ * from nested agents. Non-Agent tools are parented to the most recently active
+ * open Agent via a last-activity heuristic.
  *
  * deps: { upsertSession, insertEvent, broadcast, printEvent }
  */
 export function createEventProcessor({ upsertSession, insertEvent, broadcast, printEvent }) {
-  // Map<sessionId, Map<toolName, { dbId, ts }[]>> — stack of open pre-events
+  // Map<sessionId, Map<toolName, { dbId, ts, displayName }[]>>
   const openPre = new Map();
-  // Map<sessionId, number[]> — stack of Agent pre-event DB IDs (for parent tracking)
-  const agentStack = new Map();
+
+  // Map<sessionId, Map<agentDbId, { lastActivityTs }>>
+  const openAgents = new Map();
 
   function getOpenStack(sessionId) {
     if (!openPre.has(sessionId)) openPre.set(sessionId, new Map());
     return openPre.get(sessionId);
   }
 
-  function getAgentStack(sessionId) {
-    if (!agentStack.has(sessionId)) agentStack.set(sessionId, []);
-    return agentStack.get(sessionId);
+  function getOpenAgents(sessionId) {
+    if (!openAgents.has(sessionId)) openAgents.set(sessionId, new Map());
+    return openAgents.get(sessionId);
   }
 
-  function currentParentId(sessionId) {
-    const stack = getAgentStack(sessionId);
-    return stack.length > 0 ? stack[stack.length - 1] : null;
+  function findActiveParentAgent(sessionId) {
+    const agents = getOpenAgents(sessionId);
+    if (agents.size === 0) return null;
+    let bestId = null;
+    let bestTs = null;
+    for (const [agentDbId, info] of agents) {
+      if (bestTs === null || info.lastActivityTs > bestTs) {
+        bestTs = info.lastActivityTs;
+        bestId = agentDbId;
+      }
+    }
+    return bestId;
   }
 
-  function depth(sessionId) {
-    return getAgentStack(sessionId).length;
+  function resolveParentId(sessionId, toolName) {
+    // Agent calls are always top-level
+    if (toolName === 'Agent') return null;
+    // Non-Agent tools: parent is the most recently active open Agent
+    return findActiveParentAgent(sessionId);
+  }
+
+  function currentDepth(sessionId) {
+    return findActiveParentAgent(sessionId) !== null ? 1 : 0;
+  }
+
+  function computeDisplayName(tool_name, tool_input) {
+    if (tool_name === 'Agent') {
+      const agentLabel = tool_input?.subagent_type
+        ?? tool_input?.description
+        ?? 'Agent';
+      return `AGENT:${agentLabel}`;
+    }
+    return `TOOL:${tool_name}`;
   }
 
   function handle(raw) {
-    const { phase, session_id, tool_name, tool_input, tool_response } = raw;
+    const { phase, session_id, tool_name, tool_input, tool_response, ppid } = raw;
     const ts = new Date().toISOString();
 
     upsertSession(session_id);
 
     if (phase === 'pre') {
-      const parentId = currentParentId(session_id);
+      const parentId = resolveParentId(session_id, tool_name);
+      const displayName = computeDisplayName(tool_name, tool_input);
       const event = {
         session_id,
         tool: tool_name,
@@ -47,21 +78,24 @@ export function createEventProcessor({ upsertSession, insertEvent, broadcast, pr
         duration_ms: null,
         ts,
         parent_event_id: parentId,
+        display_name: displayName,
+        ppid: ppid ?? null,
       };
       const dbId = insertEvent(event);
 
-      // Push onto open-pre stack for duration pairing
       const stack = getOpenStack(session_id);
       if (!stack.has(tool_name)) stack.set(tool_name, []);
-      stack.get(tool_name).push({ dbId, ts });
+      stack.get(tool_name).push({ dbId, ts, displayName });
 
-      // If this is an Agent call, push onto agent stack for parent tracking
       if (tool_name === 'Agent') {
-        getAgentStack(session_id).push(dbId);
+        getOpenAgents(session_id).set(dbId, { lastActivityTs: ts });
+      } else if (parentId !== null) {
+        const info = getOpenAgents(session_id).get(parentId);
+        if (info) info.lastActivityTs = ts;
       }
 
-      const d = depth(session_id) - (tool_name === 'Agent' ? 1 : 0);
-      printEvent({ tool: tool_name, phase: 'pre', depth: d >= 0 ? d : 0 });
+      const d = tool_name === 'Agent' ? 0 : currentDepth(session_id);
+      printEvent({ tool: tool_name, displayName, phase: 'pre', depth: d });
       broadcast(JSON.stringify({ type: 'event', data: { ...event, id: dbId } }));
 
     } else if (phase === 'post') {
@@ -72,11 +106,18 @@ export function createEventProcessor({ upsertSession, insertEvent, broadcast, pr
         ? Math.round(new Date(ts) - new Date(preEntry.ts))
         : null;
 
-      const parentId = currentParentId(session_id);
+      const displayName = preEntry?.displayName ?? computeDisplayName(tool_name, null);
 
-      // If closing an Agent call, pop the agent stack
-      if (tool_name === 'Agent') {
-        getAgentStack(session_id).pop();
+      let parentId = null;
+      if (tool_name === 'Agent' && preEntry) {
+        parentId = null;
+        getOpenAgents(session_id).delete(preEntry.dbId);
+      } else {
+        parentId = findActiveParentAgent(session_id);
+        if (parentId !== null) {
+          const info = getOpenAgents(session_id).get(parentId);
+          if (info) info.lastActivityTs = ts;
+        }
       }
 
       const hasError = tool_response?.error != null;
@@ -89,11 +130,13 @@ export function createEventProcessor({ upsertSession, insertEvent, broadcast, pr
         duration_ms,
         ts,
         parent_event_id: parentId,
+        display_name: displayName,
+        ppid: ppid ?? null,
       };
       const dbId = insertEvent(event);
 
-      const d = depth(session_id);
-      printEvent({ tool: tool_name, phase: 'post', depth: d, duration_ms, hasError });
+      const d = tool_name === 'Agent' ? 0 : currentDepth(session_id);
+      printEvent({ tool: tool_name, displayName, phase: 'post', depth: d, duration_ms, hasError });
       broadcast(JSON.stringify({ type: 'event', data: { ...event, id: dbId } }));
     }
   }
