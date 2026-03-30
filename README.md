@@ -20,11 +20,23 @@ See every tool call Claude makes — in your terminal and in a live browser dash
 
 ## Quick Start
 
+**Install once:**
+
 ```bash
-npx @visheshchaitanya/claude-observer start
+npm install -g @visheshchaitanya/claude-observer
 ```
 
-That's it. Open Claude Code in another terminal and start working — every tool call appears in real time.
+**Use daily:**
+
+```bash
+claude-observer start   # start observer, open dashboard
+# ... use Claude Code normally in any terminal ...
+claude-observer stop    # stop observer, clean up hooks
+```
+
+That's it. The observer runs in the background and captures tool calls from *all* Claude Code sessions automatically.
+
+> **Alternative (no install):** `npx @visheshchaitanya/claude-observer start` works too, but the global install gives you the short `claude-observer` command.
 
 ## What It Does
 
@@ -65,19 +77,12 @@ Tool calls are color-coded by type (Bash, Read, Write, Agent, Grep, etc.) and Ag
 ## CLI Commands
 
 ```bash
-# Start the observer (injects hooks, starts server, opens dashboard)
-npx @visheshchaitanya/claude-observer start
-
-# Stop the observer (removes hooks, shuts down server)
-npx @visheshchaitanya/claude-observer stop
-
-# List all recorded sessions
-npx @visheshchaitanya/claude-observer sessions
-
-# Export a session to JSON
-npx @visheshchaitanya/claude-observer export                     # most recent session to stdout
-npx @visheshchaitanya/claude-observer export -s <session-id>     # specific session
-npx @visheshchaitanya/claude-observer export -o session.json     # write to file
+claude-observer start                        # start server, inject hooks, open dashboard
+claude-observer stop                         # remove hooks, shut down server
+claude-observer sessions                     # list all recorded sessions
+claude-observer export                       # export most recent session to stdout
+claude-observer export -s <session-id>       # export specific session
+claude-observer export -o session.json       # export to file
 ```
 
 ## How It Works
@@ -134,7 +139,7 @@ When Claude spawns sub-agents via the `Agent` tool, the observer tracks the pare
 - Server stays under ~35MB resident memory
 - Hook failure never blocks Claude Code
 - Fully local — zero cloud dependencies
-- Single `npx` command to install and start
+- Single command to install and start
 
 ## License
 
