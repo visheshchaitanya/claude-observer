@@ -90,7 +90,7 @@ export function createObserverServer(port = 4242) {
     }
   });
 
-  const { broadcast } = createWsServer(httpServer);
+  const { wss, broadcast } = createWsServer(httpServer);
 
   let processor;
   processor = createEventProcessor({
@@ -109,7 +109,17 @@ export function createObserverServer(port = 4242) {
 
   function stop() {
     return new Promise((resolve) => {
+      // Close all WebSocket connections immediately
+      for (const client of wss.clients) {
+        client.terminate();
+      }
+      // Close HTTP server with a 1s timeout fallback
+      const timeout = setTimeout(() => {
+        db.close();
+        resolve();
+      }, 1000);
       httpServer.close(() => {
+        clearTimeout(timeout);
         db.close();
         resolve();
       });

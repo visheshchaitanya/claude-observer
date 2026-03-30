@@ -51,10 +51,11 @@ export async function start() {
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log('\n[claude-observer] Shutting down...');
+    process.stderr.write('\n[claude-observer] Shutting down...\n');
     removeHooks(getSettingsPath());
     await server.stop();
     try { unlinkSync(PID_FILE); } catch {}
+    process.stderr.write('[claude-observer] Stopped.\n');
     process.exit(0);
   }
 
