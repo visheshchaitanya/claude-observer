@@ -3,23 +3,41 @@ import { dirname } from 'node:path';
 
 const OBSERVER_MARKER = 'claude-observer';
 
-function buildPreCommand(port) {
-  return `curl -s --max-time 1 -X POST "http://localhost:${port}/event?phase=pre&ppid=$PPID" -H 'Content-Type: application/json' --data-binary @- || true # claude-observer`;
-}
+/** Path segment for synchronous policy PreToolUse HTTP hook (must match server route). */
+const POLICY_EVALUATE_PATH = '/policy/evaluate';
 
 function buildPostCommand(port) {
   return `curl -s --max-time 1 -X POST "http://localhost:${port}/event?phase=post&ppid=$PPID" -H 'Content-Type: application/json' --data-binary @- || true # claude-observer`;
 }
 
-function makeHookEntry(command) {
+function makePreHookEntry(port) {
   return {
     matcher: '.*',
-    hooks: [{ type: 'command', command }],
+    hooks: [
+      {
+        type: 'http',
+        url: `http://localhost:${port}${POLICY_EVALUATE_PATH}`,
+        timeout: 5,
+      },
+    ],
   };
 }
 
-function isObserverEntry(entry) {
-  return entry?.hooks?.some(h => h.command?.includes(OBSERVER_MARKER)) ?? false;
+function makePostHookEntry(port) {
+  return {
+    matcher: '.*',
+    hooks: [{ type: 'command', command: buildPostCommand(port) }],
+  };
+}
+
+export function isObserverEntry(entry) {
+  return (
+    entry?.hooks?.some(h => {
+      if (h.type === 'command') return h.command?.includes(OBSERVER_MARKER);
+      if (h.type === 'http') return h.url?.includes(POLICY_EVALUATE_PATH);
+      return false;
+    }) ?? false
+  );
 }
 
 function readSettings(path) {
@@ -46,8 +64,8 @@ export function injectHooks(settingsPath, port) {
   settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(e => !isObserverEntry(e));
   settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(e => !isObserverEntry(e));
 
-  settings.hooks.PreToolUse.push(makeHookEntry(buildPreCommand(port)));
-  settings.hooks.PostToolUse.push(makeHookEntry(buildPostCommand(port)));
+  settings.hooks.PreToolUse.push(makePreHookEntry(port));
+  settings.hooks.PostToolUse.push(makePostHookEntry(port));
 
   writeSettings(settingsPath, settings);
 }
