@@ -11,6 +11,9 @@ import {
   getEventsBySession,
   insertPolicyDecision,
   seedDefaultSensitivePatterns,
+  getPolicyRules,
+  getSensitivePatterns,
+  getPolicyDecisions,
 } from './db.js';
 import { evaluateToolCall, buildHookResponse } from './policy.js';
 import { createWsServer } from './ws.js';
@@ -119,6 +122,32 @@ export function createObserverServer(port = 4242) {
       const events = getEventsBySession(db, eventsMatch[1]);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(events));
+      return;
+    }
+
+    // REST: GET /policy/rules
+    if (req.method === 'GET' && url.pathname === '/policy/rules') {
+      const rules = getPolicyRules(db);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(rules));
+      return;
+    }
+
+    // REST: GET /policy/patterns
+    if (req.method === 'GET' && url.pathname === '/policy/patterns') {
+      const patterns = getSensitivePatterns(db);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(patterns));
+      return;
+    }
+
+    // REST: GET /policy/decisions
+    if (req.method === 'GET' && url.pathname === '/policy/decisions') {
+      const limit = parseInt(url.searchParams.get('limit') ?? '100', 10);
+      const allDecisions = getPolicyDecisions(db);
+      const decisions = allDecisions.slice(0, limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(decisions));
       return;
     }
 
