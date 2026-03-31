@@ -175,6 +175,50 @@ export function getDbPath() {
   return `${home}/.claude-observer/sessions.db`;
 }
 
+/**
+ * Default tiered sensitive path/name patterns (regex source strings, POSIX-style paths).
+ * @type {Array<{ pattern: string, category: string, description: string, action: 'deny'|'ask'|'warn'|'allow' }>}
+ */
+export const DEFAULT_SENSITIVE_PATTERNS = [
+  { pattern: '\\.env', category: 'env', description: 'Environment variable files', action: 'ask' },
+  { pattern: '\\.env\\..+', category: 'env', description: 'Environment variant files (.env.local, .env.prod)', action: 'ask' },
+  { pattern: '\\.pem$', category: 'keys', description: 'PEM certificate/key files', action: 'deny' },
+  { pattern: '\\.key$', category: 'keys', description: 'Private key files', action: 'deny' },
+  { pattern: 'id_rsa', category: 'keys', description: 'SSH private keys', action: 'deny' },
+  { pattern: 'id_ed25519', category: 'keys', description: 'SSH private keys', action: 'deny' },
+  { pattern: 'credentials', category: 'credentials', description: 'Credential files', action: 'ask' },
+  { pattern: 'secret', category: 'credentials', description: 'Secret files', action: 'ask' },
+  { pattern: '\\.aws/', category: 'credentials', description: 'AWS configuration directory', action: 'deny' },
+  { pattern: '\\.ssh/', category: 'keys', description: 'SSH directory', action: 'deny' },
+  { pattern: 'token', category: 'credentials', description: 'Token files', action: 'ask' },
+  { pattern: 'password', category: 'credentials', description: 'Password files', action: 'deny' },
+  { pattern: '\\.npmrc', category: 'credentials', description: 'NPM config (may contain tokens)', action: 'ask' },
+  { pattern: '\\.netrc', category: 'credentials', description: 'Netrc credentials', action: 'deny' },
+  { pattern: '\\.pypirc', category: 'credentials', description: 'PyPI credentials', action: 'deny' },
+];
+
+/**
+ * Insert {@link DEFAULT_SENSITIVE_PATTERNS} when `sensitive_patterns` is empty (first run).
+ * @param {import('better-sqlite3').Database} db
+ * @returns {{ inserted: number }}
+ */
+export function seedDefaultSensitivePatterns(db) {
+  const { c } = db.prepare('SELECT COUNT(*) AS c FROM sensitive_patterns').get();
+  if (c > 0) return { inserted: 0 };
+  let inserted = 0;
+  for (const row of DEFAULT_SENSITIVE_PATTERNS) {
+    insertSensitivePattern(db, {
+      pattern: row.pattern,
+      category: row.category,
+      description: row.description,
+      action: row.action,
+      enabled: 1,
+    });
+    inserted += 1;
+  }
+  return { inserted };
+}
+
 export function insertPolicyRule(db, rule) {
   const result = db
     .prepare(

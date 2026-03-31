@@ -5,12 +5,20 @@ import { getPolicyRules, getSensitivePatterns } from './db.js';
  * @typedef {'allow'|'deny'|'ask'} PolicyDecision
  */
 
+/** Shown to the model when action is `warn` (allowed with injected context). */
+export const SENSITIVE_WARN_MESSAGE =
+  'WARNING: This file may contain secrets. Do not repeat any API keys or tokens.';
+
+/** Shown when a sensitive pattern blocks access (deny tier). */
+export const SENSITIVE_DENY_MESSAGE = 'Access denied: sensitive file';
+
 /**
  * @typedef {object} EvaluateResult
  * @property {PolicyDecision} decision
  * @property {string} [reason]
  * @property {number} [ruleId]
  * @property {string} [matchedPattern]
+ * @property {string} [additionalContext] — PreToolUse hook: injected when decision is allow+warn
  */
 
 const FILE_TOOLS = new Set(['Write', 'Read', 'Edit', 'MultiEdit', 'NotebookEdit']);
@@ -182,15 +190,66 @@ function isShellTool(toolName) {
 }
 
 /**
- * Map DB action to API decision.
+ * Map policy_rules DB action to API decision (not used for sensitive_patterns tiers).
  * @param {string} action
  * @returns {PolicyDecision}
  */
-function normalizeAction(action) {
+function normalizePolicyRuleAction(action) {
   const a = (action ?? 'deny').toLowerCase();
   if (a === 'allow') return 'allow';
   if (a === 'ask' || a === 'warn') return 'ask';
   return 'deny';
+}
+
+/**
+ * @param {string} action — sensitive_patterns.action: deny | ask | warn | allow
+ * @param {{ id?: number, pattern: string, category?: string|null, description?: string|null }} sp
+ * @returns {EvaluateResult|null} null if no match / allow without side effects
+ */
+export function evaluateSensitivePatternAction(action, sp) {
+  const a = (action ?? 'ask').toLowerCase();
+  const desc = sp.description?.trim();
+  const category = sp.category ?? 'unknown';
+
+  if (a === 'deny') {
+    return {
+      decision: 'deny',
+      reason: SENSITIVE_DENY_MESSAGE,
+      ruleId: sp.id,
+      matchedPattern: sp.pattern,
+    };
+  }
+  if (a === 'ask') {
+    return {
+      decision: 'ask',
+      reason: desc || `Sensitive pattern (${category})`,
+      ruleId: sp.id,
+      matchedPattern: sp.pattern,
+    };
+  }
+  if (a === 'warn') {
+    const prefix = desc ? `${desc} ` : '';
+    return {
+      decision: 'allow',
+      reason: `${prefix}${SENSITIVE_WARN_MESSAGE}`,
+      additionalContext: `${prefix}${SENSITIVE_WARN_MESSAGE}`.trim(),
+      ruleId: sp.id,
+      matchedPattern: sp.pattern,
+    };
+  }
+  if (a === 'allow') {
+    return {
+      decision: 'allow',
+      ruleId: sp.id,
+      matchedPattern: sp.pattern,
+    };
+  }
+  return {
+    decision: 'deny',
+    reason: SENSITIVE_DENY_MESSAGE,
+    ruleId: sp.id,
+    matchedPattern: sp.pattern,
+  };
 }
 
 /**
@@ -222,7 +281,7 @@ export function evaluateToolCall(db, toolCall) {
     if (rule.rule_type === 'sensitive_mode') continue;
     if (!toolMatcherMatches(rule.tool_matcher, tool_name)) continue;
 
-    const action = normalizeAction(rule.action);
+    const action = normalizePolicyRuleAction(rule.action);
 
     if (rule.rule_type === 'write_scope' && rule.pattern === 'outside_project') {
       if ((tool_name === 'Write' || tool_name === 'Edit' || tool_name === 'MultiEdit') && pathStr) {
@@ -302,12 +361,7 @@ export function evaluateToolCall(db, toolCall) {
     try {
       const re = new RegExp(sp.pattern);
       if (re.test(target)) {
-        return {
-          decision: normalizeAction(sp.action),
-          reason: sp.description ?? `Sensitive pattern (${sp.category ?? 'unknown'})`,
-          matchedPattern: sp.pattern,
-          ruleId: sp.id,
-        };
+        return evaluateSensitivePatternAction(sp.action, sp);
       }
     } catch {
       continue;
@@ -324,6 +378,15 @@ export function evaluateToolCall(db, toolCall) {
  */
 export function buildHookResponse(result) {
   if (result.decision === 'allow') {
+    if (result.additionalContext) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          additionalContext: result.additionalContext,
+        },
+      };
+    }
     return {};
   }
   const out = {

@@ -2,13 +2,15 @@ import {
   createDb,
   insertPolicyRule,
   insertSensitivePattern,
+  getDbPath,
+  DEFAULT_SENSITIVE_PATTERNS,
 } from '../server/db.js';
 
 const WIZARD_REASON = 'wizard-setup';
 
+/** Same file as the observer server (policy + sessions). */
 export function getPolicyDbPath() {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  return `${home}/.claude-observer/policy.db`;
+  return getDbPath();
 }
 
 function sensitiveModeToAction(mode) {
@@ -25,13 +27,6 @@ function sensitiveModeToAction(mode) {
   }
 }
 
-/** Default sensitive paths / names when mode is not "none" */
-const DEFAULT_SENSITIVE = [
-  { pattern: '\\.env($|\\.)', category: 'env' },
-  { pattern: '.*\\.pem$', category: 'keys' },
-  { pattern: '(credentials|secrets|api_key|token)', category: 'secrets' },
-];
-
 /**
  * @param {object} config
  * @param {boolean} config.blockDestructiveShell
@@ -47,7 +42,7 @@ export function savePolicyConfig(config, dbPath = getPolicyDbPath()) {
   try {
     const run = db.transaction(() => {
       db.prepare('DELETE FROM policy_rules WHERE reason = ?').run(WIZARD_REASON);
-      db.prepare('DELETE FROM sensitive_patterns WHERE description = ?').run(WIZARD_REASON);
+      db.prepare('DELETE FROM sensitive_patterns').run();
 
       insertPolicyRule(db, {
         rule_type: 'sensitive_mode',
@@ -115,7 +110,7 @@ export function savePolicyConfig(config, dbPath = getPolicyDbPath()) {
 
       const sensAction = sensitiveModeToAction(config.sensitiveMode);
       if (config.sensitiveMode !== 'none') {
-        for (const row of DEFAULT_SENSITIVE) {
+        for (const row of DEFAULT_SENSITIVE_PATTERNS) {
           insertSensitivePattern(db, {
             pattern: row.pattern,
             category: row.category,

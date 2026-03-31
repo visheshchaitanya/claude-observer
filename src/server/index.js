@@ -10,6 +10,7 @@ import {
   getAllSessions,
   getEventsBySession,
   insertPolicyDecision,
+  seedDefaultSensitivePatterns,
 } from './db.js';
 import { evaluateToolCall, buildHookResponse } from './policy.js';
 import { createWsServer } from './ws.js';
@@ -29,6 +30,7 @@ const MIME = {
 
 export function createObserverServer(port = 4242) {
   const db = createDb(getDbPath());
+  seedDefaultSensitivePatterns(db);
 
   const httpServer = createServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${port}`);

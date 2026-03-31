@@ -8,18 +8,70 @@ import {
   insertPolicyRule,
   insertSensitivePattern,
   getPolicyDecisions,
+  seedDefaultSensitivePatterns,
+  DEFAULT_SENSITIVE_PATTERNS,
 } from '../src/server/db.js';
 import {
   evaluateToolCall,
+  evaluateSensitivePatternAction,
   toolMatcherMatches,
   globPathToRegExp,
   matchPathPattern,
   matchShellPattern,
   buildHookResponse,
+  SENSITIVE_DENY_MESSAGE,
+  SENSITIVE_WARN_MESSAGE,
 } from '../src/server/policy.js';
 import { createObserverServer } from '../src/server/index.js';
 
 const TEST_DIR = join(tmpdir(), 'claude-observer-policy-test-' + Date.now());
+
+describe('seedDefaultSensitivePatterns', () => {
+  it('inserts defaults once on empty DB', () => {
+    const d = join(tmpdir(), 'claude-observer-seed-' + Date.now());
+    mkdirSync(d, { recursive: true });
+    const pdb = createDb(join(d, 'seed.db'));
+    try {
+      const first = seedDefaultSensitivePatterns(pdb);
+      assert.equal(first.inserted, DEFAULT_SENSITIVE_PATTERNS.length);
+      const second = seedDefaultSensitivePatterns(pdb);
+      assert.equal(second.inserted, 0);
+    } finally {
+      pdb.close();
+      rmSync(d, { recursive: true });
+    }
+  });
+});
+
+describe('evaluateSensitivePatternAction (tiers)', () => {
+  const sp = { id: 1, pattern: '\\.env', category: 'env', description: 'Env file' };
+
+  it('deny → deny with fixed access message', () => {
+    const r = evaluateSensitivePatternAction('deny', sp);
+    assert.equal(r.decision, 'deny');
+    assert.equal(r.reason, SENSITIVE_DENY_MESSAGE);
+    assert.equal(r.matchedPattern, '\\.env');
+  });
+
+  it('ask → ask with description', () => {
+    const r = evaluateSensitivePatternAction('ask', sp);
+    assert.equal(r.decision, 'ask');
+    assert.equal(r.reason, 'Env file');
+  });
+
+  it('warn → allow with additionalContext', () => {
+    const r = evaluateSensitivePatternAction('warn', sp);
+    assert.equal(r.decision, 'allow');
+    assert.ok(String(r.additionalContext).includes(SENSITIVE_WARN_MESSAGE));
+    assert.ok(String(r.reason).includes(SENSITIVE_WARN_MESSAGE));
+  });
+
+  it('allow → allow without warning', () => {
+    const r = evaluateSensitivePatternAction('allow', sp);
+    assert.equal(r.decision, 'allow');
+    assert.equal(r.additionalContext, undefined);
+  });
+});
 
 describe('policy helpers', () => {
   it('toolMatcherMatches', () => {
@@ -184,6 +236,54 @@ describe('evaluateToolCall', () => {
     assert.ok(r.matchedPattern);
   });
 
+  it('sensitive_patterns deny blocks with access denied message', () => {
+    insertSensitivePattern(db, {
+      pattern: '\\.pem$',
+      category: 'keys',
+      description: 'PEM',
+      action: 'deny',
+    });
+    const r = evaluateToolCall(db, {
+      tool_name: 'Read',
+      tool_input: { path: join(TEST_DIR, 'certs/x.pem') },
+    });
+    assert.equal(r.decision, 'deny');
+    assert.equal(r.reason, SENSITIVE_DENY_MESSAGE);
+  });
+
+  it('sensitive_patterns warn allows with warning context', () => {
+    insertSensitivePattern(db, {
+      pattern: '\\.npmrc',
+      category: 'credentials',
+      description: 'npm',
+      action: 'warn',
+    });
+    const r = evaluateToolCall(db, {
+      tool_name: 'Read',
+      tool_input: { path: join(TEST_DIR, 'proj/.npmrc') },
+    });
+    assert.equal(r.decision, 'allow');
+    assert.ok(String(r.additionalContext).includes(SENSITIVE_WARN_MESSAGE));
+    const hook = buildHookResponse(r);
+    assert.equal(hook.hookSpecificOutput.permissionDecision, 'allow');
+    assert.ok(String(hook.hookSpecificOutput.additionalContext).includes(SENSITIVE_WARN_MESSAGE));
+  });
+
+  it('sensitive_patterns allow tier passes through', () => {
+    insertSensitivePattern(db, {
+      pattern: 'public-readme',
+      category: 'custom',
+      description: 'ok',
+      action: 'allow',
+    });
+    const r = evaluateToolCall(db, {
+      tool_name: 'Read',
+      tool_input: { path: join(TEST_DIR, 'docs/public-readme') },
+    });
+    assert.equal(r.decision, 'allow');
+    assert.deepEqual(buildHookResponse(r), {});
+  });
+
   it('MCP tools match mcp rule_type', () => {
     insertPolicyRule(db, {
       rule_type: 'mcp',
@@ -225,6 +325,16 @@ describe('evaluateToolCall', () => {
 describe('buildHookResponse', () => {
   it('returns {} for allow', () => {
     assert.deepEqual(buildHookResponse({ decision: 'allow' }), {});
+  });
+
+  it('returns allow with additionalContext for warn tier', () => {
+    const b = buildHookResponse({
+      decision: 'allow',
+      additionalContext: `${SENSITIVE_WARN_MESSAGE}`,
+    });
+    assert.equal(b.hookSpecificOutput.hookEventName, 'PreToolUse');
+    assert.equal(b.hookSpecificOutput.permissionDecision, 'allow');
+    assert.equal(b.hookSpecificOutput.additionalContext, SENSITIVE_WARN_MESSAGE);
   });
 
   it('returns deny with permissionDecisionReason', () => {
