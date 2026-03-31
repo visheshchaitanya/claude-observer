@@ -3,14 +3,21 @@ import { describe, it, before, after } from 'node:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createDb, insertPolicyRule, insertSensitivePattern } from '../src/server/db.js';
+import {
+  createDb,
+  insertPolicyRule,
+  insertSensitivePattern,
+  getPolicyDecisions,
+} from '../src/server/db.js';
 import {
   evaluateToolCall,
   toolMatcherMatches,
   globPathToRegExp,
   matchPathPattern,
   matchShellPattern,
+  buildHookResponse,
 } from '../src/server/policy.js';
+import { createObserverServer } from '../src/server/index.js';
 
 const TEST_DIR = join(tmpdir(), 'claude-observer-policy-test-' + Date.now());
 
@@ -212,5 +219,99 @@ describe('evaluateToolCall', () => {
       tool_input: { path: '/safe/notes.txt' },
     });
     assert.equal(r.decision, 'allow');
+  });
+});
+
+describe('buildHookResponse', () => {
+  it('returns {} for allow', () => {
+    assert.deepEqual(buildHookResponse({ decision: 'allow' }), {});
+  });
+
+  it('returns deny with permissionDecisionReason', () => {
+    const b = buildHookResponse({
+      decision: 'deny',
+      reason: 'Write to /etc blocked by policy',
+    });
+    assert.equal(b.hookSpecificOutput.hookEventName, 'PreToolUse');
+    assert.equal(b.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(
+      b.hookSpecificOutput.permissionDecisionReason,
+      'Write to /etc blocked by policy'
+    );
+  });
+
+  it('returns ask without permissionDecisionReason', () => {
+    const b = buildHookResponse({ decision: 'ask', reason: 'ignored for hook shape' });
+    assert.equal(b.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(b.hookSpecificOutput.permissionDecisionReason, undefined);
+  });
+});
+
+describe('POST /policy/evaluate', () => {
+  let prevHome;
+  let testHome;
+  let server;
+  let port;
+
+  before(async () => {
+    prevHome = process.env.HOME;
+    testHome = join(tmpdir(), 'claude-observer-policy-http-' + Date.now());
+    mkdirSync(join(testHome, '.claude-observer'), { recursive: true });
+    process.env.HOME = testHome;
+    server = createObserverServer(0);
+    port = await server.start();
+    insertPolicyRule(server.db, {
+      rule_type: 'block_path',
+      pattern: '/etc/**',
+      tool_matcher: '*',
+      action: 'deny',
+      reason: 'Write to /etc blocked by policy',
+      priority: 50,
+    });
+  });
+
+  after(async () => {
+    await server.stop();
+    process.env.HOME = prevHome;
+    rmSync(testHome, { recursive: true });
+  });
+
+  it('returns deny payload and logs policy_decisions', async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/policy/evaluate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: 'hook-sess',
+        tool_name: 'Write',
+        tool_input: { path: '/etc/passwd', content: 'x' },
+      }),
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.hookSpecificOutput.hookEventName, 'PreToolUse');
+    assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(
+      String(json.hookSpecificOutput.permissionDecisionReason ?? '').includes('policy') ||
+        String(json.hookSpecificOutput.permissionDecisionReason ?? '').includes('blocked')
+    );
+
+    const rows = getPolicyDecisions(server.db, 'hook-sess');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].decision, 'deny');
+    assert.equal(rows[0].tool_name, 'Write');
+  });
+
+  it('returns {} for allow', async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/policy/evaluate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: 'allow-sess',
+        tool_name: 'Read',
+        tool_input: { path: '/tmp/foo' },
+      }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), {});
   });
 });

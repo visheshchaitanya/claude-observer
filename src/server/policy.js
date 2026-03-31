@@ -316,3 +316,22 @@ export function evaluateToolCall(db, toolCall) {
 
   return { decision: 'allow' };
 }
+
+/**
+ * Format policy result for Claude Code PreToolUse hook HTTP response.
+ * @param {EvaluateResult} result
+ * @returns {Record<string, unknown>}
+ */
+export function buildHookResponse(result) {
+  if (result.decision === 'allow') {
+    return {};
+  }
+  const out = {
+    hookEventName: 'PreToolUse',
+    permissionDecision: result.decision,
+  };
+  if (result.decision === 'deny' && result.reason) {
+    out.permissionDecisionReason = result.reason;
+  }
+  return { hookSpecificOutput: out };
+}
