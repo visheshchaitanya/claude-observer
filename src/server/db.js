@@ -25,6 +25,42 @@ const SCHEMA = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_events_session ON tool_events(session_id);
+
+  CREATE TABLE IF NOT EXISTS policy_rules (
+    id INTEGER PRIMARY KEY,
+    rule_type TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    tool_matcher TEXT DEFAULT '*',
+    action TEXT DEFAULT 'deny',
+    reason TEXT,
+    priority INTEGER DEFAULT 0,
+    enabled INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS sensitive_patterns (
+    id INTEGER PRIMARY KEY,
+    pattern TEXT NOT NULL,
+    category TEXT,
+    description TEXT,
+    action TEXT DEFAULT 'ask',
+    enabled INTEGER DEFAULT 1
+  );
+
+  CREATE TABLE IF NOT EXISTS policy_decisions (
+    id INTEGER PRIMARY KEY,
+    event_id TEXT,
+    session_id TEXT,
+    rule_id INTEGER,
+    tool_name TEXT,
+    tool_input TEXT,
+    matched_pattern TEXT,
+    decision TEXT,
+    reason TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_policy_decisions_session ON policy_decisions(session_id);
 `;
 
 export function createDb(dbPath) {
@@ -39,7 +75,57 @@ export function createDb(dbPath) {
   if (!cols.includes('ppid')) {
     db.exec('ALTER TABLE tool_events ADD COLUMN ppid TEXT');
   }
+  migratePolicyTables(db);
   return db;
+}
+
+function migratePolicyTables(db) {
+  const columnNames = (table) => db.pragma(`table_info(${table})`).map(c => c.name);
+
+  if (columnNames('policy_rules').length) {
+    const pr = columnNames('policy_rules');
+    if (!pr.includes('tool_matcher')) {
+      db.exec("ALTER TABLE policy_rules ADD COLUMN tool_matcher TEXT DEFAULT '*'");
+    }
+    if (!pr.includes('reason')) {
+      db.exec('ALTER TABLE policy_rules ADD COLUMN reason TEXT');
+    }
+    if (!pr.includes('priority')) {
+      db.exec('ALTER TABLE policy_rules ADD COLUMN priority INTEGER DEFAULT 0');
+    }
+    if (!pr.includes('enabled')) {
+      db.exec('ALTER TABLE policy_rules ADD COLUMN enabled INTEGER DEFAULT 1');
+    }
+    if (!pr.includes('created_at')) {
+      db.exec("ALTER TABLE policy_rules ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP");
+    }
+  }
+
+  if (columnNames('sensitive_patterns').length) {
+    const sp = columnNames('sensitive_patterns');
+    if (!sp.includes('description')) {
+      db.exec('ALTER TABLE sensitive_patterns ADD COLUMN description TEXT');
+    }
+    if (!sp.includes('action')) {
+      db.exec("ALTER TABLE sensitive_patterns ADD COLUMN action TEXT DEFAULT 'ask'");
+    }
+    if (!sp.includes('enabled')) {
+      db.exec('ALTER TABLE sensitive_patterns ADD COLUMN enabled INTEGER DEFAULT 1');
+    }
+  }
+
+  if (columnNames('policy_decisions').length) {
+    const pd = columnNames('policy_decisions');
+    if (!pd.includes('matched_pattern')) {
+      db.exec('ALTER TABLE policy_decisions ADD COLUMN matched_pattern TEXT');
+    }
+    if (!pd.includes('reason')) {
+      db.exec('ALTER TABLE policy_decisions ADD COLUMN reason TEXT');
+    }
+    if (!pd.includes('created_at')) {
+      db.exec("ALTER TABLE policy_decisions ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP");
+    }
+  }
 }
 
 export function upsertSession(db, sessionId) {
@@ -87,4 +173,84 @@ export function getEventsBySession(db, sessionId) {
 export function getDbPath() {
   const home = process.env.HOME || process.env.USERPROFILE;
   return `${home}/.claude-observer/sessions.db`;
+}
+
+export function insertPolicyRule(db, rule) {
+  const result = db
+    .prepare(
+      `
+    INSERT INTO policy_rules (rule_type, pattern, tool_matcher, action, reason, priority, enabled)
+    VALUES (@rule_type, @pattern, @tool_matcher, @action, @reason, @priority, @enabled)
+  `
+    )
+    .run({
+      rule_type: rule.rule_type,
+      pattern: rule.pattern,
+      tool_matcher: rule.tool_matcher ?? '*',
+      action: rule.action ?? 'deny',
+      reason: rule.reason ?? null,
+      priority: rule.priority ?? 0,
+      enabled: rule.enabled !== undefined ? rule.enabled : 1,
+    });
+  return Number(result.lastInsertRowid);
+}
+
+export function getPolicyRules(db) {
+  return db
+    .prepare('SELECT * FROM policy_rules ORDER BY priority DESC, id ASC')
+    .all();
+}
+
+export function insertSensitivePattern(db, row) {
+  const result = db
+    .prepare(
+      `
+    INSERT INTO sensitive_patterns (pattern, category, description, action, enabled)
+    VALUES (@pattern, @category, @description, @action, @enabled)
+  `
+    )
+    .run({
+      pattern: row.pattern,
+      category: row.category ?? null,
+      description: row.description ?? null,
+      action: row.action ?? 'ask',
+      enabled: row.enabled !== undefined ? row.enabled : 1,
+    });
+  return Number(result.lastInsertRowid);
+}
+
+export function getSensitivePatterns(db) {
+  return db.prepare('SELECT * FROM sensitive_patterns ORDER BY id ASC').all();
+}
+
+export function insertPolicyDecision(db, row) {
+  const result = db
+    .prepare(
+      `
+    INSERT INTO policy_decisions (event_id, session_id, rule_id, tool_name, tool_input, matched_pattern, decision, reason)
+    VALUES (@event_id, @session_id, @rule_id, @tool_name, @tool_input, @matched_pattern, @decision, @reason)
+  `
+    )
+    .run({
+      event_id: row.event_id ?? null,
+      session_id: row.session_id ?? null,
+      rule_id: row.rule_id ?? null,
+      tool_name: row.tool_name ?? null,
+      tool_input: row.tool_input ?? null,
+      matched_pattern: row.matched_pattern ?? null,
+      decision: row.decision,
+      reason: row.reason ?? null,
+    });
+  return Number(result.lastInsertRowid);
+}
+
+export function getPolicyDecisions(db, sessionId = null) {
+  if (sessionId != null) {
+    return db
+      .prepare(
+        'SELECT * FROM policy_decisions WHERE session_id = ? ORDER BY id DESC'
+      )
+      .all(sessionId);
+  }
+  return db.prepare('SELECT * FROM policy_decisions ORDER BY id DESC').all();
 }
