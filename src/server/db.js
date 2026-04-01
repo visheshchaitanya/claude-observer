@@ -21,7 +21,8 @@ const SCHEMA = `
     ts TEXT NOT NULL,
     parent_event_id INTEGER REFERENCES tool_events(id),
     display_name TEXT,
-    ppid TEXT
+    ppid TEXT,
+    status TEXT DEFAULT 'allowed'
   );
 
   CREATE INDEX IF NOT EXISTS idx_events_session ON tool_events(session_id);
@@ -74,6 +75,9 @@ export function createDb(dbPath) {
   }
   if (!cols.includes('ppid')) {
     db.exec('ALTER TABLE tool_events ADD COLUMN ppid TEXT');
+  }
+  if (!cols.includes('status')) {
+    db.exec("ALTER TABLE tool_events ADD COLUMN status TEXT DEFAULT 'allowed'");
   }
   migratePolicyTables(db);
   return db;
@@ -139,9 +143,9 @@ export function upsertSession(db, sessionId) {
 export function insertEvent(db, event) {
   const insertEventTx = db.transaction((ev) => {
     const result = db.prepare(`
-      INSERT INTO tool_events (session_id, tool, phase, input, output, duration_ms, ts, parent_event_id, display_name, ppid)
-      VALUES (@session_id, @tool, @phase, @input, @output, @duration_ms, @ts, @parent_event_id, @display_name, @ppid)
-    `).run(ev);
+      INSERT INTO tool_events (session_id, tool, phase, input, output, duration_ms, ts, parent_event_id, display_name, ppid, status)
+      VALUES (@session_id, @tool, @phase, @input, @output, @duration_ms, @ts, @parent_event_id, @display_name, @ppid, @status)
+    `).run({ ...ev, status: ev.status ?? 'allowed' });
 
     db.prepare(`
       UPDATE sessions

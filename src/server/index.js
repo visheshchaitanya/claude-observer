@@ -87,9 +87,16 @@ export function createObserverServer(port = 4242) {
           }
           const toolInputJson = JSON.stringify(raw.tool_input ?? {});
           const result = evaluateToolCall(db, raw);
+          const sessionId = typeof raw.session_id === 'string' ? raw.session_id : null;
+
+          // Map policy decision to status: allow→allowed, deny→blocked, ask→ask
+          const status = result.decision === 'deny' ? 'blocked'
+            : result.decision === 'ask' ? 'ask'
+            : 'allowed';
+
           insertPolicyDecision(db, {
             event_id: null,
-            session_id: typeof raw.session_id === 'string' ? raw.session_id : null,
+            session_id: sessionId,
             rule_id: result.ruleId,
             tool_name: raw.tool_name,
             tool_input: toolInputJson,
@@ -97,6 +104,19 @@ export function createObserverServer(port = 4242) {
             decision: result.decision,
             reason: result.reason,
           });
+
+          // Also log as a tool_event so dashboard can display it
+          if (sessionId) {
+            processor.handle({
+              phase: 'pre',
+              session_id: sessionId,
+              tool_name: raw.tool_name,
+              tool_input: raw.tool_input ?? {},
+              ppid: null,
+              _status: status,
+            });
+          }
+
           const response = buildHookResponse(result);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(response));
