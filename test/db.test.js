@@ -3,7 +3,20 @@ import { describe, it, before, after } from 'node:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createDb, upsertSession, insertEvent, getSession, getAllSessions, getEventsBySession } from '../src/server/db.js';
+import {
+  createDb,
+  upsertSession,
+  insertEvent,
+  getSession,
+  getAllSessions,
+  getEventsBySession,
+  insertPolicyRule,
+  getPolicyRules,
+  insertSensitivePattern,
+  getSensitivePatterns,
+  insertPolicyDecision,
+  getPolicyDecisions,
+} from '../src/server/db.js';
 
 const TEST_DIR = join(tmpdir(), 'claude-observer-test-' + Date.now());
 
@@ -83,5 +96,67 @@ describe('db', () => {
     const all = getAllSessions(db);
     assert.ok(all.length >= 2);
     assert.equal(all[0].id, 'sess-2');
+  });
+
+  it('insertPolicyRule and getPolicyRules round-trip with defaults', () => {
+    const id = insertPolicyRule(db, {
+      rule_type: 'block_path',
+      pattern: '/etc/**',
+    });
+    assert.ok(id > 0);
+    const rows = getPolicyRules(db);
+    const row = rows.find(r => r.id === id);
+    assert.ok(row);
+    assert.equal(row.rule_type, 'block_path');
+    assert.equal(row.pattern, '/etc/**');
+    assert.equal(row.tool_matcher, '*');
+    assert.equal(row.action, 'deny');
+    assert.equal(row.priority, 0);
+    assert.equal(row.enabled, 1);
+    assert.ok(row.created_at);
+  });
+
+  it('getPolicyRules orders by priority desc', () => {
+    insertPolicyRule(db, { rule_type: 'allow_path', pattern: '/tmp', priority: 1 });
+    insertPolicyRule(db, { rule_type: 'block_path', pattern: '/root', priority: 10 });
+    const rows = getPolicyRules(db);
+    const priorities = rows.map(r => r.priority);
+    const sorted = [...priorities].sort((a, b) => b - a);
+    assert.deepEqual(priorities, sorted);
+  });
+
+  it('insertSensitivePattern and getSensitivePatterns round-trip', () => {
+    const id = insertSensitivePattern(db, {
+      pattern: '\\.env$',
+      category: 'env',
+      description: 'Environment variable files',
+    });
+    assert.ok(id > 0);
+    const rows = getSensitivePatterns(db);
+    const row = rows.find(r => r.id === id);
+    assert.ok(row);
+    assert.equal(row.pattern, '\\.env$');
+    assert.equal(row.category, 'env');
+    assert.equal(row.action, 'ask');
+    assert.equal(row.enabled, 1);
+  });
+
+  it('insertPolicyDecision and getPolicyDecisions', () => {
+    const id = insertPolicyDecision(db, {
+      event_id: '42',
+      session_id: 'sess-policy',
+      rule_id: null,
+      tool_name: 'Write',
+      tool_input: JSON.stringify({ path: '/secret' }),
+      matched_pattern: '\\.env$',
+      decision: 'deny',
+      reason: 'Sensitive path',
+    });
+    assert.ok(id > 0);
+    const all = getPolicyDecisions(db);
+    assert.ok(all.some(r => r.id === id && r.decision === 'deny'));
+    const bySession = getPolicyDecisions(db, 'sess-policy');
+    assert.equal(bySession.length, 1);
+    assert.equal(bySession[0].tool_name, 'Write');
   });
 });

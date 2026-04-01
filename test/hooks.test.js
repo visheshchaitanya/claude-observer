@@ -3,7 +3,7 @@ import { describe, it, before, after } from 'node:test';
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { injectHooks, removeHooks, hasObserverHooks } from '../src/server/hooks.js';
+import { injectHooks, removeHooks, hasObserverHooks, isObserverEntry } from '../src/server/hooks.js';
 
 const TEST_DIR = join(tmpdir(), 'claude-hooks-test-' + Date.now());
 const SETTINGS_PATH = join(TEST_DIR, 'settings.json');
@@ -22,7 +22,12 @@ describe('hooks', () => {
     const settings = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'));
     assert.ok(settings.hooks?.PreToolUse?.length > 0);
     assert.ok(settings.hooks?.PostToolUse?.length > 0);
-    assert.ok(settings.hooks.PreToolUse[0].hooks[0].command.includes('4242'));
+    const pre = settings.hooks.PreToolUse[0].hooks[0];
+    assert.equal(pre.type, 'http');
+    assert.equal(pre.url, 'http://localhost:4242/policy/evaluate');
+    assert.equal(pre.timeout, 5);
+    assert.ok(settings.hooks.PostToolUse[0].hooks[0].command.includes('4242'));
+    assert.ok(settings.hooks.PostToolUse[0].hooks[0].command.includes('claude-observer'));
   });
 
   it('injectHooks merges with existing settings without overwriting other keys', () => {
@@ -45,9 +50,7 @@ describe('hooks', () => {
     injectHooks(SETTINGS_PATH, 4242); // second call must not duplicate
     const settings = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'));
     const preHooks = settings.hooks.PreToolUse;
-    const observerEntries = preHooks.filter(h =>
-      h.hooks?.[0]?.command?.includes('claude-observer')
-    );
+    const observerEntries = preHooks.filter(isObserverEntry);
     assert.equal(observerEntries.length, 1);
     assert.equal(preHooks.length, 2); // original + observer
   });
@@ -60,9 +63,7 @@ describe('hooks', () => {
     removeHooks(SETTINGS_PATH);
     const settings = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'));
     const preHooks = settings.hooks?.PreToolUse ?? [];
-    const observerEntries = preHooks.filter(h =>
-      h.hooks?.[0]?.command?.includes('claude-observer')
-    );
+    const observerEntries = preHooks.filter(isObserverEntry);
     assert.equal(observerEntries.length, 0);
     const otherEntries = preHooks.filter(h =>
       h.hooks?.[0]?.command === 'my-hook'
@@ -72,5 +73,52 @@ describe('hooks', () => {
 
   it('hasObserverHooks returns false after remove', () => {
     assert.equal(hasObserverHooks(SETTINGS_PATH), false);
+  });
+
+  it('isObserverEntry detects legacy PreToolUse command hook', () => {
+    assert.equal(
+      isObserverEntry({
+        matcher: '.*',
+        hooks: [{ type: 'command', command: 'curl ... # claude-observer' }]
+      }),
+      true
+    );
+  });
+
+  it('isObserverEntry detects PreToolUse http policy hook', () => {
+    assert.equal(
+      isObserverEntry({
+        matcher: '.*',
+        hooks: [{ type: 'http', url: 'http://localhost:9999/policy/evaluate', timeout: 5 }]
+      }),
+      true
+    );
+  });
+
+  it('isObserverEntry detects PostToolUse command hook', () => {
+    assert.equal(
+      isObserverEntry({
+        matcher: '.*',
+        hooks: [{ type: 'command', command: 'curl ... || true # claude-observer' }]
+      }),
+      true
+    );
+  });
+
+  it('isObserverEntry returns false for unrelated hooks', () => {
+    assert.equal(
+      isObserverEntry({
+        matcher: '.*',
+        hooks: [{ type: 'command', command: 'echo hi' }]
+      }),
+      false
+    );
+    assert.equal(
+      isObserverEntry({
+        matcher: '.*',
+        hooks: [{ type: 'http', url: 'http://localhost:8080/other', timeout: 1 }]
+      }),
+      false
+    );
   });
 });

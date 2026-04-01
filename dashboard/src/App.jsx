@@ -4,9 +4,11 @@ import { SessionList } from './components/SessionList.jsx';
 import { CallGraph } from './components/CallGraph.jsx';
 import { EventDetail } from './components/EventDetail.jsx';
 import { Header } from './components/Header.jsx';
+import { PolicyPanel } from './components/PolicyPanel.jsx';
 import { signal } from '@preact/signals';
 
 export const selectedEvent = signal(null);
+export const policyPanelExpanded = signal(false);
 
 export function App() {
   useEffect(() => { connect(); }, []);
@@ -30,6 +32,10 @@ export function App() {
         />
       </div>
       <EventDetail event={selectedEvent.value} />
+      <PolicyPanel
+        expanded={policyPanelExpanded.value}
+        onToggle={() => { policyPanelExpanded.value = !policyPanelExpanded.value; }}
+      />
     </div>
   );
 }

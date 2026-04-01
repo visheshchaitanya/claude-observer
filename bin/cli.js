@@ -48,4 +48,16 @@ program
     await exportSession(opts);
   });
 
+function registerInitSetup(cmd) {
+  return cmd
+    .description('Interactive policy configuration wizard')
+    .action(async () => {
+      const { runInitWizard } = await import('../src/cli/init.js');
+      await runInitWizard();
+    });
+}
+
+registerInitSetup(program.command('init'));
+registerInitSetup(program.command('setup'));
+
 program.parse();

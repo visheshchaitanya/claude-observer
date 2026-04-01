@@ -5,6 +5,12 @@ const TOOL_COLORS = {
   Agent: '#bc8cff', Grep: '#79c0ff', Glob: '#79c0ff',
 };
 
+const STATUS_STYLES = {
+  blocked: { bg: '#f8514922', color: '#f85149', border: '#f8514944', label: 'BLOCKED' },
+  ask:     { bg: '#d2992222', color: '#d29922', border: '#d2992244', label: 'ASK' },
+  allowed: { bg: '#3fb95022', color: '#3fb950', border: '#3fb95044', label: 'ALLOWED' },
+};
+
 function toolColor(tool) {
   return TOOL_COLORS[tool] ?? '#8b949e';
 }
@@ -40,10 +46,24 @@ function buildTree(events) {
   return merge(roots);
 }
 
+function StatusBadge({ status }) {
+  const s = STATUS_STYLES[status] ?? STATUS_STYLES.allowed;
+  return (
+    <span style={{
+      background: s.bg, color: s.color, border: `1px solid ${s.border}`,
+      borderRadius: 3, padding: '0px 4px', fontSize: 10, fontWeight: 700,
+      letterSpacing: '0.5px',
+    }}>
+      {s.label}
+    </span>
+  );
+}
+
 function Node({ node, depth, onSelect }) {
   const [collapsed, setCollapsed] = useState(false);
   const color = toolColor(node.tool);
   const hasChildren = node.children?.length > 0;
+  const status = node.status ?? 'allowed';
 
   return (
     <div style={{ marginLeft: depth * 20 }}>
@@ -52,6 +72,7 @@ function Node({ node, depth, onSelect }) {
         style={{
           display: 'flex', alignItems: 'center', gap: 8, padding: '3px 6px',
           cursor: 'pointer', borderRadius: 4, fontSize: 12,
+          opacity: status === 'blocked' ? 0.7 : 1,
         }}
       >
         {hasChildren && (
@@ -69,6 +90,7 @@ function Node({ node, depth, onSelect }) {
         }}>
           {node.display_name ?? node.tool}
         </span>
+        <StatusBadge status={status} />
         {node.duration_ms != null && (
           <span style={{ color: '#6e7681' }}>{node.duration_ms}ms</span>
         )}

@@ -61,8 +61,9 @@ export function createEventProcessor({ upsertSession, insertEvent, broadcast, pr
   }
 
   function handle(raw) {
-    const { phase, session_id, tool_name, tool_input, tool_response, ppid } = raw;
+    const { phase, session_id, tool_name, tool_input, tool_response, ppid, _status } = raw;
     const ts = new Date().toISOString();
+    const status = _status ?? 'allowed';
 
     upsertSession(session_id);
 
@@ -80,22 +81,26 @@ export function createEventProcessor({ upsertSession, insertEvent, broadcast, pr
         parent_event_id: parentId,
         display_name: displayName,
         ppid: ppid ?? null,
+        status,
       };
       const dbId = insertEvent(event);
 
-      const stack = getOpenStack(session_id);
-      if (!stack.has(tool_name)) stack.set(tool_name, []);
-      stack.get(tool_name).push({ dbId, ts, displayName });
+      // Don't track blocked calls in openPre — they won't get a post event
+      if (status === 'allowed') {
+        const stack = getOpenStack(session_id);
+        if (!stack.has(tool_name)) stack.set(tool_name, []);
+        stack.get(tool_name).push({ dbId, ts, displayName });
 
-      if (tool_name === 'Agent') {
-        getOpenAgents(session_id).set(dbId, { lastActivityTs: ts });
-      } else if (parentId !== null) {
-        const info = getOpenAgents(session_id).get(parentId);
-        if (info) info.lastActivityTs = ts;
+        if (tool_name === 'Agent') {
+          getOpenAgents(session_id).set(dbId, { lastActivityTs: ts });
+        } else if (parentId !== null) {
+          const info = getOpenAgents(session_id).get(parentId);
+          if (info) info.lastActivityTs = ts;
+        }
       }
 
       const d = tool_name === 'Agent' ? 0 : currentDepth(session_id);
-      printEvent({ tool: tool_name, displayName, phase: 'pre', depth: d });
+      printEvent({ tool: tool_name, displayName, phase: 'pre', depth: d, status });
       broadcast(JSON.stringify({ type: 'event', data: { ...event, id: dbId } }));
 
     } else if (phase === 'post') {

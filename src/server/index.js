@@ -2,7 +2,20 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createDb, getDbPath, upsertSession, insertEvent, getAllSessions, getEventsBySession } from './db.js';
+import {
+  createDb,
+  getDbPath,
+  upsertSession,
+  insertEvent,
+  getAllSessions,
+  getEventsBySession,
+  insertPolicyDecision,
+  seedDefaultSensitivePatterns,
+  getPolicyRules,
+  getSensitivePatterns,
+  getPolicyDecisions,
+} from './db.js';
+import { evaluateToolCall, buildHookResponse } from './policy.js';
 import { createWsServer } from './ws.js';
 import { createEventProcessor } from './events.js';
 import { printEvent, printSessionStart } from './stream.js';
@@ -20,6 +33,7 @@ const MIME = {
 
 export function createObserverServer(port = 4242) {
   const db = createDb(getDbPath());
+  seedDefaultSensitivePatterns(db);
 
   const httpServer = createServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${port}`);
@@ -50,6 +64,70 @@ export function createObserverServer(port = 4242) {
       return;
     }
 
+    // Policy: POST /policy/evaluate (Claude Code PreToolUse hook)
+    if (req.method === 'POST' && url.pathname === '/policy/evaluate') {
+      const MAX_BODY = 1_048_576;
+      let body = '';
+      let bodySize = 0;
+      req.on('data', chunk => {
+        bodySize += chunk.length;
+        if (bodySize > MAX_BODY) {
+          req.destroy();
+          return;
+        }
+        body += chunk;
+      });
+      req.on('end', () => {
+        try {
+          const raw = JSON.parse(body);
+          if (typeof raw.tool_name !== 'string' || raw.tool_name.length === 0) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'tool_name required' }));
+            return;
+          }
+          const toolInputJson = JSON.stringify(raw.tool_input ?? {});
+          const result = evaluateToolCall(db, raw);
+          const sessionId = typeof raw.session_id === 'string' ? raw.session_id : null;
+
+          // Map policy decision to status: allow→allowed, deny→blocked, ask→ask
+          const status = result.decision === 'deny' ? 'blocked'
+            : result.decision === 'ask' ? 'ask'
+            : 'allowed';
+
+          insertPolicyDecision(db, {
+            event_id: null,
+            session_id: sessionId,
+            rule_id: result.ruleId,
+            tool_name: raw.tool_name,
+            tool_input: toolInputJson,
+            matched_pattern: result.matchedPattern,
+            decision: result.decision,
+            reason: result.reason,
+          });
+
+          // Also log as a tool_event so dashboard can display it
+          if (sessionId) {
+            processor.handle({
+              phase: 'pre',
+              session_id: sessionId,
+              tool_name: raw.tool_name,
+              tool_input: raw.tool_input ?? {},
+              ppid: null,
+              _status: status,
+            });
+          }
+
+          const response = buildHookResponse(result);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(response));
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+        }
+      });
+      return;
+    }
+
     // REST: GET /sessions
     if (req.method === 'GET' && url.pathname === '/sessions') {
       const sessions = getAllSessions(db);
@@ -64,6 +142,32 @@ export function createObserverServer(port = 4242) {
       const events = getEventsBySession(db, eventsMatch[1]);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(events));
+      return;
+    }
+
+    // REST: GET /policy/rules
+    if (req.method === 'GET' && url.pathname === '/policy/rules') {
+      const rules = getPolicyRules(db);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(rules));
+      return;
+    }
+
+    // REST: GET /policy/patterns
+    if (req.method === 'GET' && url.pathname === '/policy/patterns') {
+      const patterns = getSensitivePatterns(db);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(patterns));
+      return;
+    }
+
+    // REST: GET /policy/decisions
+    if (req.method === 'GET' && url.pathname === '/policy/decisions') {
+      const limit = parseInt(url.searchParams.get('limit') ?? '100', 10);
+      const allDecisions = getPolicyDecisions(db);
+      const decisions = allDecisions.slice(0, limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(decisions));
       return;
     }
 
@@ -102,7 +206,11 @@ export function createObserverServer(port = 4242) {
 
   function start() {
     return new Promise((resolve, reject) => {
-      httpServer.listen(port, '127.0.0.1', () => resolve(port));
+      httpServer.listen(port, '127.0.0.1', () => {
+        const addr = httpServer.address();
+        const actual = typeof addr === 'object' && addr ? addr.port : port;
+        resolve(actual);
+      });
       httpServer.on('error', reject);
     });
   }
